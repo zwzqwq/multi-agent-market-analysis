@@ -1,0 +1,20 @@
+[project]
+name = "market-analysis-agents"
+version = "0.1.0"
+description = "多Agent市场分析报告生成系统"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2",
+    "langchain>=0.3",
+    "langchain-openai>=0.2",
+    "langchain-community>=0.3",
+    "duckduckgo-search>=6.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+]
