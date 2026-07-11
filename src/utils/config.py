@@ -21,7 +21,7 @@ class Config:
 
     # --- LLM 配置 ---
     OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
-    OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com")
+    OPENAI_BASE_URL: str = os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1")
     MODEL_NAME: str = os.getenv("MODEL_NAME", "deepseek-chat")
 
     # --- 搜索 API 配置 ---
