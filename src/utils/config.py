@@ -25,7 +25,6 @@ class Config:
     MODEL_NAME: str = os.getenv("MODEL_NAME", "deepseek-chat")
 
     # --- 搜索 API 配置 ---
-    SEARCH_BACKEND: str = os.getenv("SEARCH_BACKEND", "duckduckgo")
     TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 
     # --- 项目路径 ---
@@ -41,8 +40,8 @@ class Config:
         missing = []
         if not cls.OPENAI_API_KEY:
             missing.append("OPENAI_API_KEY")
-        if cls.SEARCH_BACKEND == "tavily" and not cls.TAVILY_API_KEY:
-            missing.append("TAVILY_API_KEY（搜索后端已选 tavily 但未提供 Key）")
+        if not cls.TAVILY_API_KEY:
+            missing.append("TAVILY_API_KEY")
         return missing
 
 
