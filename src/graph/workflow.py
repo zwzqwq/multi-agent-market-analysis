@@ -1,8 +1,8 @@
 from typing import TypedDict, Optional
-
 from langgraph.graph import StateGraph, END, START
-
 from src.models.contracts import SearchResult, AnalysisReport, DraftReport, AuditResult
+from src.tools.search_api import tavily_search_tool
+
 class AgentState(TypedDict):
     """工作流共享状态 —— 所有 Agent 节点读写同一份 State
 
@@ -22,11 +22,22 @@ class AgentState(TypedDict):
     iteration_count: int
     final_report_path: Optional[str]
 
+def search_node(state: AgentState)-> dict:
+    topic=state["topic"]
+    sources = tavily_search_tool.search(topic)
+    search_result = SearchResult(
+        sources=sources,
+        query=topic
+    )
+    return {
+        "search_result": search_result
+        }
 
 def build_workflow():
     """构建 LangGraph 工作流（骨架阶段，节点后续添加）"""
     workflow = StateGraph(AgentState)
+    workflow.add_node("search",search_node)
 
-    workflow.add_edge(START, END)
+    workflow.add_edge(START, "search")
 
     return workflow.compile()

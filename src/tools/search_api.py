@@ -33,3 +33,5 @@ class TavilySearchTool:
             )
             sources.append(source)
         return sources
+
+tavily_search_tool = TavilySearchTool()
