@@ -9,7 +9,7 @@ from langchain_openai import ChatOpenAI
 from src.utils.config import config
 import json
 
-
+MAX_ITERATIONS=3
 
 class AgentState(TypedDict):
     """工作流共享状态 —— 所有 Agent 节点读写同一份 State
@@ -133,8 +133,22 @@ def analysis_node(state:AgentState)->dict:
         model=config.MODEL_NAME,
     )
     response=analysis_llm.invoke(messages)
-    raw=response.content
-    data=json.loads(raw)
+    raw = response.content.strip()
+
+    if "```" in raw:
+        start = raw.find("```")
+        end = raw.rfind("```")
+        if start != end:
+            first_newline = raw.find("\n", start)
+            if first_newline != -1 and first_newline < end:
+                raw = raw[first_newline:end].strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"分析节点 LLM 返回非法 JSON。原始内容:\n{raw[:500]}"
+        )
     analysis_result=AnalysisReport(
         topic=state["topic"],
         key_findings=data["findings"],
@@ -248,6 +262,10 @@ WRITE_PROMPT = """
 
 def draft_node(state: AgentState) -> dict:
     """根据分析节点的分析结果，撰写一份结构化报告。"""
+    iteration_count=state["iteration_count"]
+    if state["draft"] is not None:
+        iteration_count+=1
+    
 
     analysis_result = state["analysis"]
     search_result = state["search_result"]
@@ -298,7 +316,22 @@ def draft_node(state: AgentState) -> dict:
         model=config.MODEL_NAME,
     )
     response = llm.invoke(messages)
-    data = json.loads(response.content)
+    raw = response.content.strip()
+
+    if "```" in raw:
+        start = raw.find("```")
+        end = raw.rfind("```")
+        if start != end:
+            first_newline = raw.find("\n", start)
+            if first_newline != -1 and first_newline < end:
+                raw = raw[first_newline:end].strip()
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"撰写节点 LLM 返回非法 JSON。原始内容:\n{raw[:500]}"
+        )
     
     # 构建 DraftReport
     sections = []
@@ -324,7 +357,10 @@ def draft_node(state: AgentState) -> dict:
         metadata={"generated_at": datetime.now().isoformat()}
     )
     
-    return {"draft": draft}
+    return {
+        "draft": draft,
+        "iteration_count": iteration_count
+        }
 
 AUDITOR_PROMPT="""
 你是一个专业的报告审核员，负责审核撰写节点的报告。
@@ -383,7 +419,7 @@ alignment_score 计算规则：
     ]
 }
 
-输出格式为严格JSON格式，具体如下：
+输出格式为严格JSON格式（每个字段的值必须简短，description 不超过30字，suggestion 不超过30字），具体如下：
 {
     "overall_verdict": "pass" | "minor_issues" | "major_issues",
     "issues":[
@@ -435,6 +471,7 @@ def auditor_node(state: AgentState) -> dict:
         model=config.MODEL_NAME,
         api_key=config.OPENAI_API_KEY,
         base_url=config.OPENAI_BASE_URL,
+        max_tokens=2000,
     )
     response=auditor_llm.invoke(messages)
     raw = response.content.strip()
@@ -481,6 +518,12 @@ def auditor_node(state: AgentState) -> dict:
         )
     }
 
+def route_after_audit(state:AgentState):
+    """根据审核结果决定下一步，返回裁决值本身（不是目标节点名）"""
+    if state["iteration_count"] >= MAX_ITERATIONS or state["audit"].overall_verdict == "pass":
+        return "pass"
+    else:
+        return state["audit"].overall_verdict  # 即 "minor_issues" 或 "major_issues"
 
 def build_workflow():
     """构建 LangGraph 工作流（骨架阶段，节点后续添加）"""
@@ -494,5 +537,15 @@ def build_workflow():
     workflow.add_edge("search", "analysis")
     workflow.add_edge("analysis", "write")
     workflow.add_edge("write", "audit")
+
+    workflow.add_conditional_edges(
+     "audit",           # 从哪个节点出发
+     route_after_audit, # 路由函数: 读 state → 返回 "pass" / "minor_issues" / "major_issues"
+     {
+         "pass": END,
+         "minor_issues": "write",    # 回到撰写
+         "major_issues": "analysis", # 回到分析
+     }
+    )
 
     return workflow.compile()
