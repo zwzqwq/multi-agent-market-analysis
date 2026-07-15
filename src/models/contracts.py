@@ -35,10 +35,10 @@ class SearchResult(BaseModel):
 
 class Finding(BaseModel):
     """一个分析发现：声明 + 证据 + 置信度"""
-    claim: str
-    evidence: list[str] = []        # 指向 source 的索引，如 "sources[0]"
-    confidence: float = Field(ge=0, le=1)
-    counter_evidence: list[str] = []
+    claim: str# 核心声明/结论
+    evidence: list[str] = []        # 正面证据，指向 source 的索引，如 "sources[0]"
+    confidence: float = Field(ge=0, le=1)#置信度
+    counter_evidence: list[str] = [] # 反面证据/反证
 
 
 class Contradiction(BaseModel):
