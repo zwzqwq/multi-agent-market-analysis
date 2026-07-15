@@ -85,16 +85,17 @@ class DraftReport(BaseModel):
 # 节点 4 → 路由: 审核Agent 产出，LangGraph 路由消费
 # =============================================================================
 
+
 class Issue(BaseModel):
     """审核发现的一个问题"""
-    severity: str  # "critical" | "warning"
-    location: str  # 如 "Section 2, Claim 3"
-    description: str
-    suggestion: str
+    severity: str     # 严重程度 "critical" | "warning"
+    location: str     # 问题位置 如 "Section 2, Claim 3"
+    description: str  # 问题描述
+    suggestion: str   # 修复建议
 
 
 class AuditResult(BaseModel):
     """审核结果"""
-    overall_verdict: str  # "pass" | "minor_issues" | "major_issues"
-    issues: list[Issue] = []
-    alignment_score: float = Field(ge=0, le=1)
+    overall_verdict: str  # "pass" | "minor_issues" | "major_issues" 整体结论
+    issues: list[Issue] = [] # 问题列表
+    alignment_score: float = Field(ge=0, le=1) # 一致性评分

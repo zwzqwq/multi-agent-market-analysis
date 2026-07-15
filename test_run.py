@@ -12,7 +12,7 @@ app = build_workflow()
 
 # 运行
 print("=" * 60)
-print("  测试工作流: search → analysis → write")
+print("  测试工作流: search → analysis → write → audit")
 print("=" * 60)
 
 initial_state = {
@@ -60,5 +60,16 @@ for i, s in enumerate(wr.sections):
     print(f"第[{i+1}]章： {s.title[:80]}")
     print(f"\n{s.content[:200]}...")
 print(f"\n[OK] 撰写完成")
+
+print("\n[校对结果]")
+cr=result["audit"]
+print(f"  整体裁决: {cr.overall_verdict}")
+print(f"  对齐分数: {cr.alignment_score}")
+print(f"  问题数: {len(cr.issues)}")
+for i, iss in enumerate(cr.issues):
+    print(f"  [{i+1}] {iss.severity.upper()} | {iss.location}")
+    print(f"      描述: {iss.description}")
+    print(f"      建议: {iss.suggestion}")
+
 
 print("\n[OK] 端到端测试完成")
