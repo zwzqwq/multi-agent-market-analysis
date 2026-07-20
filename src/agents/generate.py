@@ -2,12 +2,12 @@ from src.agents.state import AgentState,MAX_ITERATIONS
 from src.utils.config import config
 from src.utils.report_saver import save_report
 from src.models.contracts import Section
-from datetime import datetime
-
+from src.utils.logger import logger
 
 
 def generate_report(state:AgentState):
     """生成最终报告（审核通过 OR 达到最大迭代次数时调用）"""
+    logger.info("开始生成最终报告...")
     draft = state["draft"]
     output_path = config.OUTPUT_DIR
 

@@ -44,5 +44,10 @@ class Config:
             missing.append("TAVILY_API_KEY")
         return missing
 
+    LLM_CONFIG = {
+      "analysis": {"model": "deepseek-chat", "max_tokens": 3000},
+      "write":    {"model": "deepseek-chat", "max_tokens": 3000},
+      "audit":    {"model": "deepseek-chat", "max_tokens": 4000},
+    }
 
 config = Config()

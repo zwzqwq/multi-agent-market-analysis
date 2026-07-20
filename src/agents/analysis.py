@@ -1,9 +1,9 @@
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
 from src.agents.state import AgentState
 from src.models.contracts import AnalysisReport, Finding, Contradiction, Source
-from src.utils.config import config
-import json
+from src.utils.logger import logger
+from src.utils.llm_retry import call_llm_with_retry
+
 
 ANALYSIS_PROMPT = """
 你是一个专业的信息分析员，请根据以下搜索结果，从搜索结果中提取关键发现、标注证据、发现矛盾，并生成一份分析报告。
@@ -82,6 +82,7 @@ ANALYSIS_PROMPT = """
 """
 
 def analysis_node(state:AgentState)->dict:
+    logger.info(f"开始分析关于 '{state['topic']}' 的搜索结果...")
     source_result=state["search_result"]
     sources=source_result.sources
     sources_text="\n\n".join(f"【来源{i+1}】{source.title}\n链接：{source.url}\n摘要：{source.snippet}" for i,source in enumerate(sources))
@@ -91,28 +92,8 @@ def analysis_node(state:AgentState)->dict:
         HumanMessage(content=f"请分析以下文本：{sources_text}")
         ]
     
-    analysis_llm= ChatOpenAI(
-        api_key=config.OPENAI_API_KEY,
-        base_url=config.OPENAI_BASE_URL,
-        model=config.MODEL_NAME,
-    )
-    response=analysis_llm.invoke(messages)
-    raw = response.content.strip()
+    data = call_llm_with_retry(messages, node_name="分析")
 
-    if "```" in raw:
-        start = raw.find("```")
-        end = raw.rfind("```")
-        if start != end:
-            first_newline = raw.find("\n", start)
-            if first_newline != -1 and first_newline < end:
-                raw = raw[first_newline:end].strip()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise RuntimeError(
-            f"分析节点 LLM 返回非法 JSON。原始内容:\n{raw[:500]}"
-        )
     analysis_result=AnalysisReport(
         topic=state["topic"],
         key_findings=[
@@ -127,6 +108,7 @@ def analysis_node(state:AgentState)->dict:
         contradictions=data.get("contradictions", []),
         gaps=data.get("gaps", [])
     )
+    logger.info(f"分析关于 '{state['topic']}' 的搜索结果完成")
     return {
         "analysis":analysis_result
     }

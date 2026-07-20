@@ -1,14 +1,15 @@
 from src.models.contracts import DraftReport
 from pathlib import Path
+from src.utils.logger import logger
 
 def save_report(draft: DraftReport, output_path: str) -> str:
     """将报告按照markdown格式保存到指定路径"""
     file_path=Path(output_path)
     if file_path.exists():
-        print("目录已存在")
+        logger.debug("目录已存在")
     else:
         file_path.mkdir(parents=True, exist_ok=True)
-        print("目录不存在，执行创建流程")
+        logger.debug("目录不存在，执行创建流程")
     
     create_time=draft.metadata.get("generated_at","")
     # 文件名不能包含 Windows 不支持的字符

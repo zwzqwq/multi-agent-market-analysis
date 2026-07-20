@@ -1,12 +1,10 @@
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
 from src.agents.state import AgentState,MAX_ITERATIONS
-from src.models.contracts import AuditResult, Claim, Section, Finding, Source
+from src.models.contracts import AuditResult, Claim, Section, Finding, Source, Issue
 from src.utils.config import config
 import json
-from src.models.contracts import Issue
-
-
+from src.utils.logger import logger
+from src.utils.llm_retry import call_llm_with_retry
 
 AUDITOR_PROMPT="""
 你是一个专业的报告审核员，负责审核撰写节点的报告。
@@ -88,6 +86,7 @@ alignment_score 计算规则：
 
 def auditor_node(state: AgentState) -> dict:
     """根据撰写节点的报告，进行审核，审核通过则生成最终报告，否则返回修改意见"""
+    logger.info(f"开始审核关于 '{state['topic']}' 的报告...")
     draft=state["draft"]
     search=state["search_result"]
 
@@ -113,43 +112,7 @@ def auditor_node(state: AgentState) -> dict:
         HumanMessage(content=f"请审核关于'{state['topic']}'的报告：\n{json.dumps(input_data, ensure_ascii=False)}")
         ]
         
-    auditor_llm=ChatOpenAI(
-        model=config.MODEL_NAME,
-        api_key=config.OPENAI_API_KEY,
-        base_url=config.OPENAI_BASE_URL,
-        max_tokens=4000,
-    )
-    response = auditor_llm.invoke(messages)
-    finish_reason = response.response_metadata.get('finish_reason', 'N/A')
-    print(f"审核节点 finish_reason: {finish_reason}", flush=True)
-    
-    raw = response.content.strip()
-    print(f"审核节点原始输出长度: {len(raw)}", flush=True)
-    print(f"审核节点原始输出: {raw}", flush=True)
-
-    if not raw:
-        raise RuntimeError(
-            f"审核节点 LLM 返回空内容。"
-            f"finish_reason={response.response_metadata.get('finish_reason', 'N/A')}"
-        )
-
-    # 尝试从 markdown 代码块中提取 JSON
-    if "```" in raw:
-        # 找到第一个 ``` 和最后一个 ``` 之间的内容
-        start = raw.find("```")
-        end = raw.rfind("```")
-        if start != end:
-            # 提取代码块内容（跳过 ```json 或 ``` 那一行）
-            first_newline = raw.find("\n", start)
-            if first_newline != -1 and first_newline < end:
-                raw = raw[first_newline:end].strip()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise RuntimeError(
-            f"审核节点 LLM 返回非法 JSON。原始内容:\n{raw[:500]}"
-        )
+    data = call_llm_with_retry(messages, node_name="审核")
 
     overall_verdict = data["overall_verdict"]
     issues = [
@@ -161,6 +124,7 @@ def auditor_node(state: AgentState) -> dict:
         ) for issue in data["issues"]
     ]
     alignment_score = data["alignment_score"]
+    logger.info(f"审核关于 '{state['topic']}' 的报告完成，结果为 {overall_verdict}")
     return {
         "audit": AuditResult(
             overall_verdict=overall_verdict,
@@ -168,6 +132,7 @@ def auditor_node(state: AgentState) -> dict:
             alignment_score=alignment_score
         )
     }
+    
 
 def route_after_audit(state:AgentState):
     """根据审核结果决定下一步，返回裁决值本身（不是目标节点名）"""

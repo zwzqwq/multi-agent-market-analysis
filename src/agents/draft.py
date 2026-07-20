@@ -1,10 +1,10 @@
 from langchain_core.messages import SystemMessage, HumanMessage
-from langchain_openai import ChatOpenAI
 from src.agents.state import AgentState
 from src.models.contracts import DraftReport, Section, Claim, Finding
-from src.utils.config import config
 import json
 from datetime import datetime
+from src.utils.logger import logger
+from src.utils.llm_retry import call_llm_with_retry
 
 WRITE_PROMPT = """
 你是一个专业的报告撰写员。请根据以下分析结果撰写一份结构化报告。
@@ -109,6 +109,7 @@ WRITE_PROMPT = """
 
 def draft_node(state: AgentState) -> dict:
     """根据分析节点的分析结果，撰写一份结构化报告。"""
+    logger.info(f"开始撰写关于 '{state['topic']}' 的报告...")
     iteration_count=state["iteration_count"]
     if state["draft"] is not None:
         iteration_count+=1
@@ -157,28 +158,7 @@ def draft_node(state: AgentState) -> dict:
         HumanMessage(content=f"请撰写关于'{state['topic']}'的报告：\n{json.dumps(input_data, ensure_ascii=False)}")
     ]
     
-    llm = ChatOpenAI(
-        api_key=config.OPENAI_API_KEY,
-        base_url=config.OPENAI_BASE_URL,
-        model=config.MODEL_NAME,
-    )
-    response = llm.invoke(messages)
-    raw = response.content.strip()
-
-    if "```" in raw:
-        start = raw.find("```")
-        end = raw.rfind("```")
-        if start != end:
-            first_newline = raw.find("\n", start)
-            if first_newline != -1 and first_newline < end:
-                raw = raw[first_newline:end].strip()
-
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        raise RuntimeError(
-            f"撰写节点 LLM 返回非法 JSON。原始内容:\n{raw[:500]}"
-        )
+    data = call_llm_with_retry(messages, node_name="撰写")
     
     # 构建 DraftReport
     sections = []
@@ -203,8 +183,10 @@ def draft_node(state: AgentState) -> dict:
         sections=sections,
         metadata={"generated_at": datetime.now().isoformat()}
     )
+    logger.info(f"撰写关于 '{state['topic']}' 的报告完成，迭代次数 {iteration_count}")
     
     return {
         "draft": draft,
         "iteration_count": iteration_count
         }
+
