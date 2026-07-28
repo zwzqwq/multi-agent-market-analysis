@@ -157,6 +157,13 @@ def draft_node(state: AgentState) -> dict:
         SystemMessage(content=WRITE_PROMPT),
         HumanMessage(content=f"请撰写关于'{state['topic']}'的报告：\n{json.dumps(input_data, ensure_ascii=False)}")
     ]
+
+    # minor_issues 回退：在已有草稿基础上修改，同时注入审核反馈
+    if state.get("audit") is not None and state["audit"].issues:
+        feedback_lines = ["\n\n注意：请基于上一轮审核反馈修改报告："]
+        for issue in state["audit"].issues:
+            feedback_lines.append(f"- [{issue.severity}] {issue.location}: {issue.description}。建议: {issue.suggestion}")
+        messages.append(HumanMessage(content="\n".join(feedback_lines)))
     
     data = call_llm_with_retry(messages, node_name="撰写")
     

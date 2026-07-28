@@ -86,10 +86,21 @@ def analysis_node(state:AgentState)->dict:
     source_result=state["search_result"]
     sources=source_result.sources
     sources_text="\n\n".join(f"【来源{i+1}】{source.title}\n链接：{source.url}\n摘要：{source.snippet}" for i,source in enumerate(sources))
-    
+
+    # 如果存在上一轮审核反馈，注入到分析上下文中，避免同样的数据产生同样的分析
+    previous_audit = state.get("audit")
+    if previous_audit is not None and previous_audit.issues:
+        feedback_lines = ["特别注意：上一轮审核发现以下问题，请针对性地重新分析："]
+        for issue in previous_audit.issues:
+            feedback_lines.append(f"- [{issue.severity}] {issue.location}: {issue.description}。建议: {issue.suggestion}")
+        feedback_text = "\n".join(feedback_lines)
+        human_content = f"请分析以下文本：{sources_text}\n\n{feedback_text}"
+    else:
+        human_content = f"请分析以下文本：{sources_text}"
+
     messages=[
         SystemMessage(content=ANALYSIS_PROMPT),
-        HumanMessage(content=f"请分析以下文本：{sources_text}")
+        HumanMessage(content=human_content)
         ]
     
     data = call_llm_with_retry(messages, node_name="分析")

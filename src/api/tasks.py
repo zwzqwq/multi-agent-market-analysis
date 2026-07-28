@@ -27,9 +27,8 @@ from src.api.store import ReportStore
 from src.utils.logger import logger
 
 # 全局线程池：整个进程生命周期只创建一次，所有请求共用
-# max_workers=1 = "我只有一个工人在处理报告生成"
-# 升级路径: 如果未来需要并发 → 改 max_workers + 每次 build_workflow() 编译新图即可
-_workflow_executor = ThreadPoolExecutor(max_workers=1)
+# build_workflow() 每次调用都编译新图，所以多 worker 不会互相污染
+_workflow_executor = ThreadPoolExecutor(max_workers=3)
 
 
 def _invoke_workflow(topic: str) -> dict:

@@ -352,14 +352,17 @@ Prompt 是多 Agent 系统的"代码"。Agent 能力上限由模型决定，但*
 
 ### 项目实战案例
 
-（当前项目尚未系统搭建可观测性，以下为路二规划）
-
-**现状**：目前调试依赖 `test_run.py` 中逐个打印每个节点的输出，能解决问题但效率低。
-
-**规划**：
-- LangSmith / LangFuse 追踪每次 `app.invoke()` 的完整链路
-- 每个节点的输入/输出自动记录
-- 回退历史可视化
+**1. LangSmith 全链路追踪接入**
+- **症状**：管线跑完只能看最终报告，中间哪个节点出了问题、回退了几次、每次 LLM 调用了多少 token 完全不知道
+- **解决方案**：接入 LangSmith（LangChain 官方可观测性平台），只需 `.env` 加 3 行环境变量：
+  ```
+  LANGCHAIN_TRACING_V2=true
+  LANGCHAIN_API_KEY=xxx
+  LANGCHAIN_PROJECT=multi-agent-market-analysis
+  ```
+- **零代码改动**：LangGraph 自动识别 StateGraph 的节点和边，每个节点的输入/输出 state、每次 LLM 调用的 prompt/返回/token 消耗全自动上报
+- **实战效果**：发现一次完整管线耗时 128s、审核节点回退了 3 次（分析节点是最大瓶颈）、总 token 约 20 万
+- **经验**：可观测性不是"后期加"，而是越早接入越有价值——第一个版本就能看到系统瓶颈
 
 ### 尚未遇到但需要预警
 
@@ -377,11 +380,190 @@ Prompt 是多 Agent 系统的"代码"。Agent 能力上限由模型决定，但*
 
 ---
 
+---
+
+## 九、代码架构与关注点分离
+
+### 这是什么问题？
+
+当所有 Agent 节点代码堆在一个 500+ 行的文件中，每改一个 prompt 都要在一大坨代码里翻找，而且三个节点里各有一段完全相同的 JSON 清洗代码。随着 Agent 数量增加，单文件会迅速失控。
+
+### 项目实战案例
+
+**1. workflow.py 拆分**
+
+- **拆分前**：`src/graph/workflow.py` 584 行，包含 AgentState、4 个 Agent 节点 + Prompt 常量、generate_report、路由函数、编排逻辑
+- **拆分后**：
+  ```
+  src/agents/
+    ├── state.py         ← AgentState + MAX_ITERATIONS（状态定义收归一处）
+    ├── search.py        ← search_node
+    ├── analysis.py      ← analysis_node + ANALYSIS_PROMPT
+    ├── draft.py         ← draft_node + WRITE_PROMPT
+    ├── audit.py         ← auditor_node + AUDITOR_PROMPT + route_after_audit
+    └── generate.py      ← generate_report
+  src/graph/
+    └── workflow.py      ← 只留 build_workflow() 编排逻辑（~40 行）
+  ```
+- **原则**：每个文件的职责 = 一个 Agent 的完整逻辑（prompt + 函数），修改一个 Agent 不需要碰其他文件
+- **经验**：拆分的时机是"当你开始在同一个文件里上下翻页找东西的时候"
+
+**2. 从拆分中发现重复代码**
+
+- **发现**：拆开后一眼看出 analysis/draft/audit 三个节点各有一段完全相同的 markdown 剥离 + json.loads 逻辑（~20 行）
+- **解决**：抽成公共函数 `parse_llm_json(raw, node_name)` 放 `src/utils/json_parser.py`，三个节点各调用一行
+- **经验**：先拆分再优化——代码分散时看不到重复，收拢后才明显
+
+**3. 每个 Agent 各创建一个 ChatOpenAI vs 统一管理**
+
+- **问题**：三个节点各自写 `ChatOpenAI(api_key=..., base_url=..., model=...)`，换模型要改 3 个文件
+- **生产环境需求**：不同节点可能用不同模型（分析+审核用 GPT-4 保质量，搜索+撰写用 DeepSeek 降成本）
+- **解决方案**：创建 `call_llm_with_retry(messages, node_name)` 作为 LLM 调用唯一入口，模型配置收归 `config.LLM_CONFIG`：
+  ```python
+  LLM_CONFIG = {
+      "analysis": {"model": "deepseek-chat", "max_tokens": 3000},
+      "write":    {"model": "deepseek-chat", "max_tokens": 3000},
+      "audit":    {"model": "deepseek-chat", "max_tokens": 4000},
+  }
+  ```
+- **切换模型**：只改 config 一行，所有节点自动生效
+
+### 尚未遇到但需要预警
+
+| 问题变体 | 症状 | 应对思路 |
+|---------|------|---------|
+| **Agent 间共享的工具函数膨胀** | `src/utils/` 下越来越多函数，命名冲突、循环导入风险 | 按职责分子目录：`utils/json_parser.py`、`utils/llm_retry.py`，而不是一个 `utils/helpers.py` |
+| **配置文件膨胀** | 随着模型变多，`LLM_CONFIG` 的键值对越来越多 | 考虑把模型配置移到 `.env` 或其自身的 YAML/JSON 文件 |
+| **Agent 作为独立服务** | 当单个 Agent 的计算量大到需要独立部署时，当前进程内调用的模式不可用 | 预留接口边界：Agent 之间只通过 state dict 通信，不共享内存对象 |
+
+### 通解思路
+
+1. 拆分的本质是**关注点分离**——一个文件只做一件事
+2. 拆分后自然暴露出重复代码和耦合点——这是好事，不是副作用
+3. 配置和代码分开管理：换模型不应该改业务逻辑代码
+
+---
+
+## 十、系统加固与容错设计
+
+### 这是什么问题？
+
+AI Agent 管线中，每次 LLM 调用都是一次"可能失败的操作"。空内容、JSON 非法、网络超时——不加重试机制的话，一个节点的偶然波动就导致整条管线报废，浪费前面所有已完成的步骤。
+
+### 项目实战案例
+
+**1. LLM 重试机制：温度递增策略**
+
+- **问题**：DeepSeek 偶尔返回空内容或非法 JSON，但第二次问同样的问题可能就正常了——这是随机性波动，不是能力问题
+- **方案**：最多重试 3 次，每次温度递增（0 → 0.3 → 0.6）
+- **温度递增的设计理由**：temperature=0 时模型对同一输入总是返回相同的确定性输出——如果第一次空内容，重试也不会变。调高温度让模型"走另一条路径"，打破死循环
+- **代码位置**：`src/utils/llm_retry.py` → `call_llm_with_retry()`
+- **经验**：重试策略的关键不是"重试几次"，而是"每次重试有什么不同"——纯重试而不改变条件等于浪费 token
+
+**2. 重试与 JSON 解析的职责分离**
+
+- **设计**：`parse_llm_json()` 负责空内容检测 + markdown 剥离 + json.loads → 抛异常还是返回 dict
+- **包装**：`call_llm_with_retry()` 调 `parse_llm_json()`，捕获异常决定是否重试
+- **好处**：`parse_llm_json` 保持为纯函数（输入字符串 → 输出 dict），不关心字符串从哪来；重试逻辑只关心"要不要再问一次 LLM"
+- **经验**：纯函数和副作用逻辑分开——前者好测试，后者好替换
+
+**3. 统一日志系统替换 print() 调试**
+
+- **问题**：全项目散落 `print()` 语句，没有时间戳、没有级别区分、不能持久化到文件
+- **方案**：
+  - 控制台：INFO 级别（用户关心的进度信息）
+  - 文件：DEBUG 级别（完整记录，排查问题时看），自动写入 `logs/app.log`
+  - 每个 Agent 节点入口/出口各一行日志，形成完整时间线
+  - **按天轮转 + 保留 7 天**：`TimedRotatingFileHandler(when="midnight", backupCount=7)`
+- **轮转机制**：不是定时器，而是"惰性检测"——每次写日志时比对当前时间和上次切分时间，跨天了就自动重命名旧文件 + 创建新文件
+- **经验**：从项目第一天就建立日志习惯，比出问题后临时加 print 高效得多
+
+### 尚未遇到但需要预警
+
+| 问题变体 | 症状 | 应对思路 |
+|---------|------|---------|
+| **重试次数过多撑爆 token 预算** | 每个节点 3 次重试 × 4 个节点 = 最多 12 次 LLM 调用，如果审核回退再加倍 | 设全局 token 上限或重试总次数上限；记录每次重试的 token 消耗 |
+| **重试掩盖了 prompt 本身的问题** | 每次都要重试才能过 → 说明 prompt 质量有问题，但被重试掩盖了 | 重试时打 WARNING 日志；如果某节点重试率超过 30%，就该审查 prompt |
+| **日志文件占用磁盘** | 即使按天轮转，高流量服务一天也能写几个 G | 按大小轮转作为补充：单文件超过 100MB 自动切 |
+| **温度递增可能引入新幻觉** | 温度越高输出越随机，重试时可能编造出不同的假数据 | 重试成功的结果加标记，审核节点对重试产出从严审查 |
+
+### 通解思路
+
+1. LLM 调用当成不稳定的外部依赖——写重试、写超时、写降级
+2. 重试不等于"再来一次"——改变条件（温度/propmt 变体/模型）才有意义
+3. 日志是救命稻草——出问题时第一件事不是改代码，是看日志
+
+---
+
+## 十一、Web 接口层与异步处理
+
+### 这是什么问题？
+
+Agent 管线写好后只通过 CLI 调用，无法被外部系统集成。需要暴露为 HTTP API，但管线一次调用要 128 秒——HTTP 请求不能傻等 2 分钟才回话，否则整个服务卡死。
+
+### 项目实战案例
+
+**1. 提交-轮询模式（Submit-Poll Pattern）**
+
+- **问题**：`app.invoke()` 是同步阻塞的，如果直接在 FastAPI handler 里调，整个请求线程卡 128 秒，期间其他请求也进不来
+- **方案**：
+  1. `POST /api/v1/reports` 收到请求 → 秒回 202 + `report_id`
+  2. `asyncio.create_task()` 把 workflow 扔到后台线程池执行
+  3. 前端每 3 秒调 `GET /api/v1/reports/{id}` 查状态
+  4. 完成后调 `GET /api/v1/reports/{id}/content` 拿报告
+- **类比**：餐厅点完菜拿到号码牌，坐着等叫号——服务员不会站在厨房门口等菜做好
+- **经验**：长任务 + HTTP = 异步任务模式，不要试图让用户等
+
+**2. 线程安全：每次编译新图 + 单 worker**
+
+- **问题**：LangGraph 的 `StateGraph.invoke()` 不是线程安全的——两个请求同时调会互相踩踏内部状态 channel
+- **方案 A（采纳）**：`ThreadPoolExecutor(max_workers=1)` — 一次只跑一个，后来的排队
+- **方案 B（备选）**：多 worker + 每次调 `build_workflow()` 编译新图 — 每个 worker 拿到的图对象是独立的，不共享状态
+- **当前实现**：A + B 结合（单 worker + 新建图），双重保险
+- **升级路径**：如果需要真正的并发，用 Celery + Redis 任务队列替换线程池
+
+**3. 业务代码零改动**
+
+- **原则**：`src/api/` 和 `src/ui/` 是新增目录，`src/agents/`、`src/graph/`、`src/models/` 一行没改
+- **FastAPI 层做的事**：接收 HTTP 请求 → 构建 initial_state → 调 workflow → 把结果存入 ReportStore
+- **Gradio 层做的事**：画按钮和文本框 → 发 HTTP 请求调 FastAPI → 轮询直到完成 → 显示 Markdown
+- **Gradio 和 Workflow 没有直接耦合**——Gradio 不知道 LangGraph 的存在，只跟 FastAPI 说话
+- **经验**：接口层应该是**透明包装**，不对业务逻辑做任何假设
+
+### 尚未遇到但需要预警
+
+| 问题变体 | 症状 | 应对思路 |
+|---------|------|---------|
+| **后台任务丢失** | `asyncio.create_task()` 创建的任务在服务重启时消失，正在跑的管线报废 | 换成持久化任务队列（Celery/Redis），任务状态不在内存而在数据库 |
+| **并发请求排队过长** | 单 worker 一次只跑一个，第 3 个请求要等 256 秒才能开始 | 用多 worker + 每 worker 编译新图；或上任务队列 + 水平扩展 |
+| **前端轮询浪费带宽** | 每 3 秒一次 HTTP 请求，100 个用户同时等 = 每秒 33 个请求 | 换成 WebSocket 推送（任务完成 → 服务端主动通知前端） |
+| **API 缺少鉴权** | 当前任何人 POST 都能触发报告生成，消耗 LLM token | 加 API Key 鉴权或简单的 Token 验证（FastAPI 的 `Depends` 机制天然支持） |
+| **报告内容过大** | 一次返回 2 万字 Markdown，HTTP 响应体太大 | 分页返回或提供文件下载链接代替 inline 返回 |
+
+### 通解思路
+
+1. 长任务 ≠ 长请求——异步任务模式是 Web 服务的标准做法
+2. 接口层是业务逻辑的"透明包装"，不应该修改业务代码
+3. 当前架构（单 worker + 内存存储 + 轮询）是 v1 演示方案——生产环境需要任务队列 + 数据库 + WebSocket
+4. 这个模式不仅适用于 Agent 项目——任何"耗时超过 5 秒的操作"都该这样做
+
+
 ## 问题速查索引
 
 | 你的症状 | 去哪看 |
 |---------|--------|
 | LLM 输出不是合法 JSON | 第二章 |
+| LLM 编造了一个不存在的引用 | 第一章（虚构引用幻觉） |
+| State 改了但下一节点看到的是旧值 | 第三章（State 管理） |
+| 改了 prompt 但下游行为异常 | 第四章（Prompt 契约） |
+| 回退循环一直跑不结束 | 第五章（无限循环）+ 第三章（iteration_count） |
+| 文件名保存报错 | 第七章（Windows 非法字符） |
+| 每次测试消耗大量 token | 第七章（测试策略） |
+| 不知道哪个节点出了问题 | 第八章（可观测性） |
+| LLM 返回空内容/JSON 解析失败 | 第十章（重试机制） |
+| 换模型要改很多文件 | 第九章（LLM 调用统一入口） |
+| 管线跑太久 HTTP 请求超时 | 第十一章（异步任务模式） |
+| Gradio 页面打不开/连不上 | 第十一章（Web 接口层） |
 | LLM 编造了一个不存在的引用 | 第一章（虚构引用幻觉） |
 | State 改了但下一节点看到的是旧值 | 第三章（State 管理） |
 | 改了 prompt 但下游行为异常 | 第四章（Prompt 契约） |
