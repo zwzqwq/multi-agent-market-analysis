@@ -1,0 +1,13 @@
+services:
+  multi-agent-market-analysis:
+    build: .
+    ports:
+      - 8001:8000
+    volumes:
+      - ./outputs:/app/outputs
+      - ./.env:/app/.env
+    environment:
+      - OUTPUT_DIR=/app/outputs
+    
+
+
